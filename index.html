@@ -936,10 +936,6 @@ const BRANCHES = {
       "address": "חבר הלאומים 1 | א.פ.א סטוק"
     },
     {
-      "city": "תל אביב",
-      "address": "חבר הלאומים 1"
-    },
-    {
       "city": "רמלה",
       "address": "היצירה 10 | וואליו אומני"
     },
@@ -1044,6 +1040,74 @@ const BRANCHES = {
     {
       "city": "עפולה",
       "address": "שדרות ארלוזורוב 29"
+    },
+    {
+      "city": "עכו",
+      "address": "בן עמי 2"
+    },
+    {
+      "city": "נהריה",
+      "address": "הגעתון 23"
+    },
+    {
+      "city": "קריית שמונה",
+      "address": "תל חי 5"
+    },
+    {
+      "city": "טבריה",
+      "address": "הירדן 3"
+    },
+    {
+      "city": "חיפה",
+      "address": "הנביאים 28"
+    },
+    {
+      "city": "חיפה",
+      "address": "מתחם BIG"
+    },
+    {
+      "city": "נצרת",
+      "address": "פאולוס השישי 66"
+    },
+    {
+      "city": "כרמיאל",
+      "address": "מרכז העיר"
+    },
+    {
+      "city": "ראשון לציון",
+      "address": "קרן היסוד 1"
+    },
+    {
+      "city": "נתניה",
+      "address": "הרצל 19"
+    },
+    {
+      "city": "חולון",
+      "address": "וייצמן 1"
+    },
+    {
+      "city": "אשדוד",
+      "address": "המלאכה 4"
+    },
+    {
+      "city": "אשקלון",
+      "address": "הפנינים 20"
+    },
+    {
+      "city": "קריית גת",
+      "address": "לכיש 5"
+    },
+    {
+      "city": "ירושלים",
+      "address": "יפו 224"
+    },
+    {
+      "city": "בית שמש",
+      "address": "אורה 7"
+    },
+    {
+      "city": "מודיעין",
+      "address": "ים התיכון 7"
     }
   ],
   "בום": [
@@ -1094,6 +1158,30 @@ const BRANCHES = {
     {
       "city": "נתיבות",
       "address": "מרכז מסחרי העיר"
+    },
+    {
+      "city": "חיפה",
+      "address": "הנביאים 15"
+    },
+    {
+      "city": "תל אביב",
+      "address": "אלנבי 58"
+    },
+    {
+      "city": "פתח תקווה",
+      "address": "כצנלסון 8"
+    },
+    {
+      "city": "נתניה",
+      "address": "הרצל 40"
+    },
+    {
+      "city": "ירושלים",
+      "address": "יפו 100"
+    },
+    {
+      "city": "אשדוד",
+      "address": "רוגוזין 3"
     }
   ],
   "ביג סטוק": [
@@ -1350,6 +1438,42 @@ const BRANCHES = {
     {
       "city": "אשקלון",
       "address": "מרכז סילבר"
+    },
+    {
+      "city": "תל אביב",
+      "address": "המסגר 13"
+    },
+    {
+      "city": "ראשון לציון",
+      "address": "הזית 3"
+    },
+    {
+      "city": "פתח תקווה",
+      "address": "המלאכה 3"
+    },
+    {
+      "city": "באר שבע",
+      "address": "שד' רגר 111"
+    },
+    {
+      "city": "אשדוד",
+      "address": "האורגים 7"
+    },
+    {
+      "city": "קריית גת",
+      "address": "תעשייה 12"
+    },
+    {
+      "city": "נתיבות",
+      "address": "בן גוריון 6"
+    },
+    {
+      "city": "קריית שמונה",
+      "address": "תל חי 5"
+    },
+    {
+      "city": "עפולה",
+      "address": "המרכז 1"
     }
   ],
   "רמי לוי סטוק": [
@@ -1360,6 +1484,50 @@ const BRANCHES = {
     {
       "city": "רמלה",
       "address": "רמלה"
+    },
+    {
+      "city": "חיפה",
+      "address": "ירושלים 12"
+    },
+    {
+      "city": "תל אביב",
+      "address": "שד' ההגנה"
+    },
+    {
+      "city": "ראשון לציון",
+      "address": "נחום הית 10"
+    },
+    {
+      "city": "פתח תקווה",
+      "address": "ז'בוטינסקי 56"
+    },
+    {
+      "city": "נתניה",
+      "address": "ויצמן 89"
+    },
+    {
+      "city": "באר שבע",
+      "address": "שד' רגר 52"
+    },
+    {
+      "city": "ירושלים",
+      "address": "ירמיהו 80"
+    },
+    {
+      "city": "בית שמש",
+      "address": "נחל לכיש 4"
+    },
+    {
+      "city": "קריית גת",
+      "address": "הנשיא 8"
+    },
+    {
+      "city": "אשקלון",
+      "address": "רוגוזין 7"
+    },
+    {
+      "city": "אשדוד",
+      "address": "בן גוריון 24"
     }
   ]
 };
@@ -2702,11 +2870,27 @@ function printLabel(o){
   w.document.close();
 }
 function finishPick(id){
-  modal("סיום לקיטה",
-    `<div class="fg"><label class="flbl">מספר משטחים שנארזו</label><input class="finp" id="palIn" type="number" min="1" max="99" placeholder="0"/></div>
-     <div class="fg"><label class="flbl">הערת מקלט (אופציונלי)</label><textarea class="finp" id="noteIn" placeholder="חסר פריט, נזק..." style="min-height:60px"></textarea></div>`,
+  modal("✅ סיום לקיטה",
+    `<div class="fg">
+      <label class="flbl" style="font-size:14px;margin-bottom:8px">כמה משטחים נארזו?</label>
+      <input class="finp" id="palIn" type="number" min="1" max="99" placeholder="הזן מספר..."
+        inputmode="numeric" pattern="[0-9]*"
+        style="font-size:28px;font-weight:900;text-align:center;padding:16px;letter-spacing:4px"
+        autofocus/>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        ${[1,2,3,4,5,6,7,8,9,10].map(n=>`<button type="button" class="btn btn-ghost btn-sm" style="flex:1;min-width:40px" onclick="document.getElementById('palIn').value=${n}">${n}</button>`).join("")}
+      </div>
+    </div>
+    <div class="fg" style="margin-top:12px">
+      <label class="flbl">הערת מקלט (אופציונלי)</label>
+      <textarea class="finp" id="noteIn" placeholder="חסר פריט, נזק, החלפה..." style="min-height:55px"></textarea>
+    </div>`,
     [{l:"ביטול",c:"btn-ghost",a:"closeModal()"},{l:"✅ סמן בוצע",c:"btn-green",a:`doFinish('${id}')`}]
   );
+  setTimeout(()=>{
+    const el=document.getElementById("palIn");
+    if(el){el.focus();el.select();}
+  },300);
 }
 function doFinish(id){
   const pal=parseInt(document.getElementById("palIn")?.value)||0;
