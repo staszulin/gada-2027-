@@ -135,7 +135,7 @@ body{font-family:'Heebo',sans-serif;background:var(--bg);color:var(--text);direc
 .alert-banner.show{display:flex;}
 .ab-dot{width:6px;height:6px;border-radius:50%;background:var(--red);animation:pulse 1.2s infinite;flex-shrink:0;}
 
-.scroll-area{flex:1;overflow-y:auto;padding:15px;}
+.scroll-area{flex:1;overflow-y:auto;padding:15px 15px 20px 15px;}
 
 /* TABS */
 .tabs{display:flex;gap:3px;background:var(--card);border-radius:12px;padding:4px;margin-bottom:14px;border:1px solid var(--border);}
@@ -1560,16 +1560,18 @@ function startRf(){
   try{
     sseSource=new EventSource("https://gada-2027-default-rtdb.europe-west1.firebasedatabase.app/orders.json");
     sseSource.addEventListener("put",async (e)=>{
-      const data=JSON.parse(e.data);
-      if(!data||!data.data) return;
-      const orders=Object.entries(data.data).map(([k,o])=>{o._fbKey=k;return o;});
-      localStorage.setItem(SK,JSON.stringify(orders));
-      const h=hashArr(orders);
-      refreshAlertBanner();
-      if(h!==lastH){
+      try{
+        const data=JSON.parse(e.data);
+        if(!data) return;
+        const raw = data.data;
+        if(!raw) return;
+        const orders=Object.entries(raw).map(([k,o])=>{if(o){o._fbKey=k;} return o;}).filter(Boolean);
+        localStorage.setItem(SK,JSON.stringify(orders));
+        const h=hashArr(orders);
+        refreshAlertBanner();
         lastH=h;
         if(!document.getElementById("modalOv").classList.contains("open")) renderRole(role);
-      }
+      }catch(err){ console.log("SSE parse error",err); }
     });
     sseSource.addEventListener("patch",async ()=>{
       const fresh=await fbLoad();
@@ -1594,14 +1596,19 @@ function startRf(){
 function startPolling(){
   if(rfTmr) clearInterval(rfTmr);
   rfTmr=setInterval(async()=>{
-    const fresh=await loadAsync();
-    const h=hashArr(fresh);
-    refreshAlertBanner();
-    if(h!==lastH){
-      lastH=h;
-      if(!document.getElementById("modalOv").classList.contains("open")) renderRole(role);
-    }
-  },4000);
+    try{
+      const fresh=await fbLoad(); // Always from Firebase
+      if(fresh.length>0){
+        localStorage.setItem(SK,JSON.stringify(fresh));
+        const h=hashArr(fresh);
+        refreshAlertBanner();
+        if(h!==lastH){
+          lastH=h;
+          if(!document.getElementById("modalOv").classList.contains("open")) renderRole(role);
+        }
+      }
+    }catch(e){}
+  },5000);
 }
 
 function stopRf(){
@@ -1671,21 +1678,26 @@ function enter(r){
   const cls={agent:"tb-badge tb-agent",warehouse:"tb-badge tb-wh",driver:"tb-badge tb-driver",manager:"tb-badge tb-mgr"};
   const b=document.getElementById("tbBadge"); b.textContent=lbl[r]; b.className=cls[r];
   showScreen("appFrame");
-  // Load local immediately - don't wait for Firebase
-  const localOrders = load();
-  lastH = hashArr(localOrders);
-  refreshAlertBanner();
-  renderRole(r);
-  startRf();
-  // Then sync from Firebase in background
-  loadAsync().then(orders=>{
-    const h=hashArr(orders);
-    if(h!==lastH){
-      lastH=h;
-      localStorage.setItem(SK,JSON.stringify(orders));
+  document.getElementById("mainContent").innerHTML=`<div class="empty"><div class="empty-i">⏳</div><div class="empty-t" style="color:var(--gold)">מתחבר...</div></div>`;
+  
+  // Try Firebase first (3 second timeout), fallback to localStorage
+  const fbTimeout = new Promise((_,reject)=>setTimeout(()=>reject(new Error("timeout")),3000));
+  Promise.race([loadAsync(), fbTimeout])
+    .then(orders=>{
+      localStorage.setItem(SK, JSON.stringify(orders));
+      lastH=hashArr(orders);
+      refreshAlertBanner();
       renderRole(r);
-    }
-  }).catch(()=>{});
+      startRf();
+    })
+    .catch(()=>{
+      // Firebase failed - use localStorage
+      const localOrders=load();
+      lastH=hashArr(localOrders);
+      refreshAlertBanner();
+      renderRole(r);
+      startRf();
+    });
 }
 function renderRole(r){
   const c=document.getElementById("mainContent");
@@ -1916,14 +1928,24 @@ function submitOrder(){
     needArranger,arrangerDate,arrangerNote,
     arrangerName:"",arrangerAssignedAt:""};
   arrangerNeeded=false;
-  // Push to Firebase
-  fbPush(newOrder).then(fbKey=>{
-    toast(`✅ ${chain} ${city} – נשלח!`);
-  });
-  // Also update local immediately for UX
+  
+  // Save local immediately for UX
   orders=load();
   orders.push(newOrder);
   save(orders);
+  
+  // Push to Firebase and store the Firebase key
+  fbPush(newOrder).then(fbKey=>{
+    if(fbKey){
+      const updated=load();
+      const o=updated.find(x=>x.id===newOrder.id);
+      if(o){ o._fbKey=fbKey; save(updated); }
+    }
+    toast(`✅ ${chain} ${city} – נשלח!`);
+  }).catch(()=>{
+    toast(`✅ ${chain} ${city} – נשמר מקומית`);
+  });
+  
   atab=1; renderRole("agent");
 }
 
@@ -1941,7 +1963,8 @@ function rWarehouse(){
   <div class="tabs">
     <button class="tab-btn ${wtab===0?"on":""}" onclick="setWT(0)">הזמנות</button>
     <button class="tab-btn ${wtab===1?"on":""}" onclick="setWT(1)">📅 לוח שבועי</button>
-    <button class="tab-btn ${wtab===2?"on":""}" onclick="setWT(2)">התראות${alerts.length?` 🔴`:""}</button>
+    <button class="tab-btn ${wtab===2?"on":""}" onclick="setWT(2)">📦 סופק</button>
+    <button class="tab-btn ${wtab===3?"on":""}" onclick="setWT(3)">התראות${alerts.length?` 🔴`:""}</button>
   </div>
   <div class="tab-pane ${wtab===0?"on":""}">
     <div class="stats-row">
@@ -1960,6 +1983,9 @@ function rWarehouse(){
     ${rWeeklyBoard(orders)}
   </div>
   <div class="tab-pane ${wtab===2?"on":""}">
+    ${rDeliveredArchive()}
+  </div>
+  <div class="tab-pane ${wtab===3?"on":""}">
     ${rAlerts(alerts)}
   </div>`;
 }
@@ -2211,7 +2237,8 @@ function markLoaded(id,e){
   e.stopPropagation();
   const orders=load(); const o=orders.find(x=>x.id===id); if(!o)return;
   o.status="loaded"; o.loadedAt=nowStr(); o.loadedMs=nowMs(); save(orders);
-  if(o._fbKey) fbPatch(o._fbKey,{status:"loaded",loadedAt:o.loadedAt,loadedMs:o.loadedMs});
+  if(o._fbKey){ fbPatch(o._fbKey,{status:"loaded",loadedAt:o.loadedAt,loadedMs:o.loadedMs}); }
+  else{ fbSave(orders); }
   toast("✅ העמסה אושרה!"); renderRole(role);
 }
 
@@ -2246,6 +2273,7 @@ function archiveOldOrders(){
 // Run archive check every login
 function runMaintenance(){
   archiveOldOrders();
+  cleanOldArchive();
   doBackup();
 }
 
@@ -2269,7 +2297,7 @@ function rManager(){
   const maxN=top10[0]?.n||1;
 
   return `
-  <div class="tabs">
+  <div class="tabs" style="overflow-x:auto;flex-wrap:nowrap">
     <button class="tab-btn ${mtab===0?"on":""}" onclick="setMT(0)">סיכום</button>
     <button class="tab-btn ${mtab===1?"on":""}" onclick="setMT(1)">📅 לוח</button>
     <button class="tab-btn ${mtab===2?"on":""}" onclick="setMT(2)">התראות${alerts.length?" 🔴":""}</button>
@@ -2279,7 +2307,7 @@ function rManager(){
     <button class="tab-btn ${mtab===6?"on":""}" onclick="setMT(6)">⚙️</button>
   </div>
 
-  <!-- סיכום -->
+  <!-- 0: סיכום -->
   <div class="tab-pane ${mtab===0?"on":""}">
     <div class="stats-row">
       <div class="sbox"><div class="sbox-num">${cnt.total}</div><div class="sbox-lbl">סה"כ</div></div>
@@ -2293,10 +2321,7 @@ function rManager(){
         top10.map((b,i)=>`
         <div class="t10-row">
           <div class="t10-rank ${i===0?"g":i===1?"s":i===2?"b":""}">${i+1}</div>
-          <div class="t10-info">
-            <div class="t10-chain">${b.chain}</div>
-            <div class="t10-loc">📍 ${b.city}${b.branch?` · ${b.branch}`:""}</div>
-          </div>
+          <div class="t10-info"><div class="t10-chain">${b.chain}</div><div class="t10-loc">📍 ${b.city}${b.branch?` · ${b.branch}`:""}</div></div>
           <div class="t10-bar-wrap"><div class="t10-bar" style="width:${Math.round(b.n/maxN*100)}%"></div></div>
           <div class="t10-cnt">${b.n}</div>
         </div>`).join("")}
@@ -2312,14 +2337,12 @@ function rManager(){
         const days=(ZONES[zone]?.days||[]).join(" + ");
         return `<div style="padding:10px 0;border-bottom:1px solid var(--border)">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-            <div style="flex:1">
-              <div style="font-size:13px;font-weight:800">${info.emoji} ${zone}</div>
-              <div style="font-size:10px;color:var(--blue);margin-top:2px">📅 ${days}</div>
-            </div>
+            <div style="flex:1"><div style="font-size:13px;font-weight:800">${info.emoji} ${zone}</div>
+            <div style="font-size:10px;color:var(--blue);margin-top:2px">📅 ${days}</div></div>
             <div style="text-align:center;flex-shrink:0">
               <div style="font-size:22px;font-weight:900;color:var(--gold)">${zOrds.length}</div>
               <div style="font-size:9px;color:var(--text3)">הזמנות</div>
-              ${done.length?`<div style="font-size:10px;color:var(--green)">✓${done.length} · ${pals}📦</div>`:""}
+              ${done.length?`<div style="font-size:10px;color:var(--green)">✓${done.length}·${pals}📦</div>`:""}
               ${pend.length?`<div style="font-size:10px;color:var(--orange)">⏳${pend.length}</div>`:""}
             </div>
           </div>
@@ -2328,20 +2351,20 @@ function rManager(){
     </div>
   </div>
 
-  <!-- לוח שבועי -->
+  <!-- 1: לוח שבועי -->
   <div class="tab-pane ${mtab===1?"on":""}">
     ${rWeeklyBoard(orders)}
   </div>
 
-  <!-- התראות -->
+  <!-- 2: התראות -->
   <div class="tab-pane ${mtab===2?"on":""}">
     ${rAlerts(alerts)}
   </div>
 
-  <!-- הזמנות -->
-  <div class="tab-pane ${mtab===2?"on":""}">
+  <!-- 3: הזמנות -->
+  <div class="tab-pane ${mtab===3?"on":""}">
     <div class="filter-bar">
-      ${[["all","הכל"],["new","🟡 ממתין"],["picking","🔵 בלקיטה"],["done","🟢 לקוט"],["loaded","🟠 נשלח"]].map(([k,l])=>
+      ${[["all","הכל"],["new","🟡 ממתין"],["picking","🔵 בלקיטה"],["done","🟢 לקוט"],["loaded","🚛 נשלח"]].map(([k,l])=>
         `<button class="fchip ${mgrFilter===k?"on":""}" onclick="setMgrF('${k}')">${l}</button>`).join("")}
     </div>
     ${(()=>{
@@ -2353,18 +2376,20 @@ function rManager(){
     })()}
   </div>
 
-  <!-- AI -->
-  <div class="tab-pane ${mtab===3?"on":""}">
+  <!-- 4: AI -->
+  <div class="tab-pane ${mtab===4?"on":""}">
     ${rAIOptimizer(orders)}
   </div>
 
-  <!-- סדרנים -->
-  <div class="tab-pane ${mtab===4?"on":""}">
+  <!-- 5: סדרנים -->
+  <div class="tab-pane ${mtab===5?"on":""}">
     ${rArrangerTab(orders)}
   </div>
 
-  <!-- הגדרות -->
-  <div class="tab-pane ${mtab===5?"on":""}>\n    <div class=\"card\">\n      <div class=\"card-title\"><h3>⚙️ סוכנים</h3></div>
+  <!-- 6: הגדרות -->
+  <div class="tab-pane ${mtab===6?"on":""}">
+    <div class="card">
+      <div class="card-title"><h3>⚙️ סוכנים</h3></div>
       <div id="agList"></div>
       <div style="display:flex;gap:8px;margin-top:11px">
         <input class="finp" id="newAgInp" placeholder="הוסף סוכן..." style="flex:1"/>
@@ -2379,7 +2404,6 @@ function rManager(){
         <button class="btn btn-gold btn-sm" onclick="addArranger()">+ הוסף</button>
       </div>
     </div>
-    ${rSched()}
     <div class="card" style="margin-top:10px">
       <div class="card-title"><h3>🗂️ ארכיון (30 יום)</h3></div>
       <div style="font-size:12px;color:var(--text2)">
@@ -2389,8 +2413,7 @@ function rManager(){
           return archKeys.map(k=>{
             const month=k.replace("gada_archive_","");
             const data=JSON.parse(localStorage.getItem(k)||"[]");
-            return `<div class="drow"><span>📦 ${month} — ${data.length} הזמנות</span>
-            <button class="btn btn-ghost btn-sm" onclick="viewArchive('${k}')">צפה</button></div>`;
+            return `<div class="drow"><span>📦 ${month} — ${data.length} הזמנות</span><button class="btn btn-ghost btn-sm" onclick="viewArchive('${k}')">צפה</button></div>`;
           }).join("");
         })()}
       </div>
@@ -2401,6 +2424,7 @@ function rManager(){
         ${(()=>{const bk=getBackups();return bk.length?bk.map(b=>`<div class="drow"><span>${b.date} (${b.count} הזמנות)</span><button class="btn btn-ghost btn-sm" onclick="restoreBackup('${b.key}')">שחזר</button></div>`).join(""):'<div style="color:var(--text3);padding:8px 0">אין גיבויים עדיין</div>'})()}
       </div>
     </div>
+    ${rSched()}
     <button class="btn btn-red" style="opacity:0.55;margin-top:6px" onclick="confirmClear()">🗑️ נקה את כל הנתונים</button>
   </div>`;
 }
@@ -2441,6 +2465,57 @@ function viewArchive(key){
     </div>`,
     [{l:"סגור",c:"btn-ghost",a:"closeModal()"}]
   );
+}
+
+function markDelivered(id){
+  const orders=load();
+  const o=orders.find(x=>x.id===id);
+  if(!o) return;
+  
+  // Archive the order with 14-day retention
+  o.deliveredAt=nowStr();
+  o.deliveredMs=nowMs();
+  const archKey="gada_arch_"+new Date().toISOString().slice(0,7);
+  const existing=JSON.parse(localStorage.getItem(archKey)||"[]");
+  existing.push(o);
+  localStorage.setItem(archKey, JSON.stringify(existing));
+  
+  // Remove from active orders
+  const updated=orders.filter(x=>x.id!==id);
+  save(updated);
+  
+  // Remove from Firebase
+  if(o._fbKey) fbDelete(o._fbKey);
+  else fbSave(updated);
+  
+  toast(`📦 ${o.chain} ${o.city} — סופק ונארכב`);
+  renderRole(role);
+}
+
+function cleanOldArchive(){
+  // Remove archive entries older than 14 days
+  const FOURTEEN_DAYS = 14*86400000;
+  const now = Date.now();
+  const archKeys = Object.keys(localStorage).filter(k=>k.startsWith("gada_arch_"));
+  archKeys.forEach(k=>{
+    const data = JSON.parse(localStorage.getItem(k)||"[]");
+    const filtered = data.filter(o=>{
+      const ms = o.deliveredMs||0;
+      return ms && (now-ms) < FOURTEEN_DAYS;
+    });
+    if(filtered.length===0) localStorage.removeItem(k);
+    else if(filtered.length!==data.length) localStorage.setItem(k,JSON.stringify(filtered));
+  });
+}
+
+function getArchiveOrders(){
+  const keys=Object.keys(localStorage).filter(k=>k.startsWith("gada_arch_")).sort().reverse();
+  const all=[];
+  keys.forEach(k=>{
+    const data=JSON.parse(localStorage.getItem(k)||"[]");
+    all.push(...data);
+  });
+  return all.sort((a,b)=>(b.deliveredMs||0)-(a.deliveredMs||0));
 }
 
 function clearAll(){
@@ -2510,6 +2585,7 @@ function getActs(o,r){
   if(r==="warehouse"||r==="manager"){
     if(o.status==="new") a.push(`<button class="btn btn-blue btn-sm" onclick="startPick('${o.id}')">🔵 התחל לקיטה</button>`);
     if(o.status==="picking") a.push(`<button class="btn btn-green btn-sm" onclick="finishPick('${o.id}')">✅ סמן בוצע</button>`);
+    if(o.status==="loaded") a.push(`<button class="btn btn-green btn-sm" onclick="markDelivered('${o.id}')">📦 סופק ללקוח</button>`);
   }
   if(r==="warehouse"||r==="driver"||r==="manager"){
     if(o.status==="done") a.push(`<button class="btn btn-gold btn-sm" onclick="markLoaded('${o.id}',event)">🚛 העמס למשאית</button>`);
@@ -2568,7 +2644,8 @@ function doStart(id){
   localStorage.setItem("gada_picker",n);
   const orders=load(); const o=orders.find(x=>x.id===id); if(!o)return;
   o.status="picking"; o.pickerName=n; save(orders);
-  if(o._fbKey) fbPatch(o._fbKey,{status:"picking",pickerName:n});
+  if(o._fbKey){ fbPatch(o._fbKey,{status:"picking",pickerName:n}); }
+  else{ fbSave(orders); } // fallback: save all
   closeModal();
   toast(`🔵 ${n} מתחיל לקיטה`);
   // Print label
@@ -2638,7 +2715,8 @@ function doFinish(id){
   const orders=load(); const o=orders.find(x=>x.id===id); if(!o)return;
   o.status="done"; o.pallets=pal; o.pickedAt=nowStr(); o.pickerNote=note;
   save(orders);
-  if(o._fbKey) fbPatch(o._fbKey,{status:"done",pallets:pal,pickedAt:o.pickedAt,pickerNote:note});
+  if(o._fbKey){ fbPatch(o._fbKey,{status:"done",pallets:pal,pickedAt:o.pickedAt,pickerNote:note}); }
+  else{ fbSave(orders); }
   closeModal(); toast(`✅ לקוט! ${pal} משטחים`); renderRole(role);
 }
 function delOrder(id){
@@ -2981,6 +3059,49 @@ function startPickW(id, e){
   startPick(id);
 }
 
+function rDeliveredArchive(){
+  const orders = getArchiveOrders();
+  const FOURTEEN_DAYS = 14*86400000;
+  const now = Date.now();
+  
+  if(orders.length===0) return `
+    <div class="empty">
+      <div class="empty-i">📦</div>
+      <div class="empty-t">אין הזמנות מסופקות</div>
+      <div class="empty-s">הזמנות שסופקו יופיעו כאן ל-14 יום</div>
+    </div>`;
+
+  const totalPals = orders.reduce((s,o)=>s+(o.pallets||0),0);
+  
+  return `
+  <div class="stats-row" style="margin-bottom:12px">
+    <div class="sbox"><div class="sbox-num" style="color:var(--green)">${orders.length}</div><div class="sbox-lbl">סופק</div></div>
+    <div class="sbox"><div class="sbox-num" style="color:var(--gold)">${totalPals}</div><div class="sbox-lbl">משטחים</div></div>
+    <div class="sbox"><div class="sbox-num" style="color:var(--text3)">14</div><div class="sbox-lbl">ימי שמירה</div></div>
+    <div class="sbox"><div class="sbox-num" style="color:var(--blue)">${orders.filter(o=>daysDiff(o.deliveredMs||0)<1).length}</div><div class="sbox-lbl">היום</div></div>
+  </div>
+  ${orders.map(o=>{
+    const daysAgo = Math.floor(daysDiff(o.deliveredMs||0));
+    const daysLeft = 14-daysAgo;
+    return `
+    <div class="ocard s-loaded" style="border-right-color:var(--green);opacity:${daysLeft<3?0.6:1}">
+      <div class="ocard-head">
+        <div class="oh-l">
+          <div class="oh-chain" style="color:var(--green)">${o.chain}</div>
+          <div class="oh-city">📍 ${o.city} · ${o.branch||""}</div>
+          <div class="oh-addr"><span class="zpill">${o.zone}</span></div>
+        </div>
+        <div class="oh-r">
+          <span class="spill wts-done">📦 סופק</span>
+          <span class="oh-pal">${o.pallets||0} 📦</span>
+          <span class="oh-agent">${o.agentName}</span>
+          <span style="font-size:9px;color:var(--text3)">${daysAgo===0?"היום":daysAgo+"  ימים"} · עוד ${daysLeft}י'</span>
+        </div>
+      </div>
+    </div>`;
+  }).join("")}`;
+}
+
 function modal(title,body,actions){
   document.getElementById("modalTitle").textContent=title;
   document.getElementById("modalBody").innerHTML=body;
@@ -3114,7 +3235,7 @@ function recordLoginAttempt(success){
 // ════════ INIT ════════
 showScreen("loginScreen");
 </script>
-  <div style="text-align:center;padding:12px;font-size:11px;color:var(--text3);border-top:1px solid var(--border);background:var(--bg);position:fixed;bottom:0;left:0;right:0;z-index:50;pointer-events:none">
+  <div style="text-align:center;padding:10px;font-size:11px;color:var(--text3);border-top:1px solid var(--border);background:var(--bg2);margin-top:auto">
     © 2025–2026 כל הזכויות שמורות לסטס זולין
   </div>
 </body>
