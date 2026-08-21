@@ -135,7 +135,7 @@ body{font-family:'Heebo',sans-serif;background:var(--bg);color:var(--text);direc
 .alert-banner.show{display:flex;}
 .ab-dot{width:6px;height:6px;border-radius:50%;background:var(--red);animation:pulse 1.2s infinite;flex-shrink:0;}
 
-.scroll-area{flex:1;overflow-y:auto;padding:15px;}
+.scroll-area{flex:1;overflow-y:auto;padding:15px 15px 44px;}
 
 /* TABS */
 .tabs{display:flex;gap:3px;background:var(--card);border-radius:12px;padding:4px;margin-bottom:14px;border:1px solid var(--border);}
@@ -482,6 +482,17 @@ textarea.finp{resize:vertical;min-height:68px;}
 
 /* EMPTY */
 .empty{text-align:center;padding:44px 18px;color:var(--text3);}
+
+/* APP FOOTER */
+.app-footer{
+  position:fixed;bottom:0;left:0;right:0;z-index:50;
+  text-align:center;padding:9px 12px;
+  font-size:10px;font-weight:600;letter-spacing:0.3px;
+  color:var(--text3);
+  background:linear-gradient(180deg,transparent,var(--bg) 40%);
+  pointer-events:none;
+}
+.app-footer span{color:var(--gold);font-weight:800;}
 .empty-i{font-size:44px;margin-bottom:10px;}
 .empty-t{font-size:14px;font-weight:700;color:var(--text2);}
 .empty-s{font-size:11px;margin-top:4px;}
@@ -3110,8 +3121,6 @@ function recordLoginAttempt(success){
 // ════════ INIT ════════
 showScreen("loginScreen");
 </script>
-  <div style="text-align:center;padding:12px;font-size:11px;color:var(--text3);border-top:1px solid var(--border);background:var(--bg);position:fixed;bottom:0;left:0;right:0;z-index:50;pointer-events:none">
-    © 2025–2026 כל הזכויות שמורות לסטס זולין
-  </div>
+  <div class="app-footer">© 2025–2026 כל הזכויות שמורות ל<span>סטס זולין</span></div>
 </body>
 </html>
