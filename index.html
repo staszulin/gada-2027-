@@ -598,6 +598,10 @@ const AGENTS = ["ליאור לסרי","איציק עזרן","אריאל"];
 const ARRANGERS_KEY = "gada_arrangers";
 const DEFAULT_ARRANGERS = ["סדרן 1","סדרן 2","סדרן 3"];
 function getArrangers(){ return JSON.parse(localStorage.getItem(ARRANGERS_KEY)||"null")||DEFAULT_ARRANGERS; }
+// Shared list of known warehouse preparers (מכינים), so the app can always show
+// exactly who prepared each order even though several מחסנאים share one login.
+const PICKERS_KEY = "gada_pickers_list";
+function getPickers(){ return JSON.parse(localStorage.getItem(PICKERS_KEY)||"null")||[]; }
 const CHAINS    = ["זול סטוק","דן דיל","מקס סטוק","בום","ביג סטוק","סיטי מרקט","הסטוק","גמה דיל","רמי לוי סטוק"];
 const BRANCHES = {
   "מקס סטוק": [
@@ -1557,7 +1561,8 @@ let openSet=new Set(),pinVal="",rfTmr=null,lastH="";
 // STORAGE
 // ════════════════════════════════
 // ════════ Firebase Config ════════
-const FB_URL = "https://gada-2027-default-rtdb.europe-west1.firebasedatabase.app/orders";
+const FB_BASE = "https://gada-2027-default-rtdb.europe-west1.firebasedatabase.app";
+const FB_URL = FB_BASE+"/orders";
 
 // Firebase REST helpers
 async function fbLoad(){
@@ -1611,6 +1616,61 @@ async function fbPatch(fbKey,patch){
   }catch(e){console.error("FB patch error",e);}
 }
 
+// ════════ Generic Firebase helpers (for shared settings/archive, not just orders) ════════
+async function fbGet(path){
+  try{
+    const r=await fetch(FB_BASE+"/"+path+".json");
+    return await r.json();
+  }catch(e){console.error("FB get error",path,e);return null;}
+}
+async function fbPut(path,data){
+  try{
+    await fetch(FB_BASE+"/"+path+".json",{
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(data)
+    });
+  }catch(e){console.error("FB put error",path,e);}
+}
+function dedupeById(arr){
+  const seen=new Set();
+  return arr.filter(o=>{
+    if(!o||!o.id||seen.has(o.id)) return false;
+    seen.add(o.id); return true;
+  });
+}
+
+// ════════ Shared settings (arrangers/agents/pickers) — synced via Firebase so every device sees the same lists ════════
+async function syncSettingsFromCloud(){
+  const s=await fbGet("settings");
+  if(s){
+    if(Array.isArray(s.arrangers)) localStorage.setItem(ARRANGERS_KEY,JSON.stringify(s.arrangers));
+    if(Array.isArray(s.agents)) localStorage.setItem("gada_agents",JSON.stringify(s.agents));
+    if(Array.isArray(s.pickers)) localStorage.setItem(PICKERS_KEY,JSON.stringify(s.pickers));
+  }
+  return s;
+}
+function fbSaveArrangers(arr){ return fbPut("settings/arrangers",arr); }
+function fbSaveAgents(arr){ return fbPut("settings/agents",arr); }
+function fbSavePickers(arr){ return fbPut("settings/pickers",arr); }
+
+// ════════ Shared archives (30-day loaded archive + 14-day delivered archive) — also synced via Firebase ════════
+async function syncArchivesFromCloud(){
+  const [arch,deliv]=await Promise.all([fbGet("archive"),fbGet("delivered")]);
+  if(arch){
+    Object.entries(arch).forEach(([month,data])=>{
+      if(Array.isArray(data)) localStorage.setItem("gada_archive_"+month,JSON.stringify(data));
+    });
+  }
+  if(deliv){
+    Object.entries(deliv).forEach(([month,data])=>{
+      if(Array.isArray(data)) localStorage.setItem("gada_arch_"+month,JSON.stringify(data));
+    });
+  }
+}
+function fbSaveArchiveMonth(month,data){ return fbPut("archive/"+month,data); }
+function fbSaveDeliveredMonth(month,data){ return fbPut("delivered/"+month,data); }
+
 // Legacy sync wrappers (keep for compatibility)
 const load=()=>{ try{return JSON.parse(localStorage.getItem(SK))||[];}catch{return[];} };
 const save=a=>localStorage.setItem(SK,JSON.stringify(a));
@@ -1651,7 +1711,7 @@ function getZone(city){
   for(const[z,d]of Object.entries(ZONES)) if(d.cities.some(c=>city.includes(c)||c.includes(city))) return z;
   return "לא שובץ";
 }
-const sLabel=s=>({new:"ממתין",picking:"בלקיטה",done:"לקוט ✓",loaded:"🚛 בדרך להפצה"}[s]||s);
+const sLabel=s=>({new:"ממתין",picking:"בהכנה",done:"מוכן ✓",loaded:"🚛 בדרך להפצה"}[s]||s);
 const spCls=s=>({new:"sp-new",picking:"sp-picking",done:"sp-done",loaded:"sp-loaded"}[s]||"");
 const scCls=s=>"s-"+s;
 
@@ -1731,8 +1791,33 @@ function startRf(){
       try{
         const data=JSON.parse(e.data);
         if(!data) return;
+        const path = data.path;
         const raw = data.data;
-        if(!raw) return;
+        // Firebase sends "put" events for ANY change, not just full-list replaces.
+        // When a single order is created/deleted, path is "/<key>" and data is just
+        // that one order's fields (or null) — NOT the full orders map. Treating that
+        // as the full list (old behavior) corrupted localStorage with garbage on every
+        // new order, which is what broke cross-device sync. For any non-root path,
+        // do a safe full reload from Firebase instead of trusting the partial payload.
+        if(path && path!=="/"){
+          const fresh=await fbLoad();
+          localStorage.setItem(SK,JSON.stringify(fresh));
+          const h=hashArr(fresh);
+          refreshAlertBanner();
+          if(h!==lastH){
+            lastH=h;
+            if(!document.getElementById("modalOv").classList.contains("open")) renderRole(role);
+          }
+          return;
+        }
+        if(!raw){
+          // Root wiped (e.g. clearAll() run on another device)
+          localStorage.setItem(SK,"[]");
+          refreshAlertBanner();
+          lastH="";
+          if(!document.getElementById("modalOv").classList.contains("open")) renderRole(role);
+          return;
+        }
         const orders=Object.entries(raw).map(([k,o])=>{if(o){o._fbKey=k;} return o;}).filter(Boolean);
         localStorage.setItem(SK,JSON.stringify(orders));
         const h=hashArr(orders);
@@ -1866,6 +1951,15 @@ function enter(r){
       renderRole(r);
       startRf();
     });
+
+  // Pull shared settings (arrangers/agents lists) and archives from the cloud too,
+  // so every device shows the same lists — not just the live orders. Doesn't block
+  // the initial screen; re-renders once fresh data arrives.
+  Promise.all([syncSettingsFromCloud(), syncArchivesFromCloud()])
+    .then(()=>{
+      if(role===r && !document.getElementById("modalOv").classList.contains("open")) renderRole(r);
+    })
+    .catch(()=>{});
 }
 function renderRole(r){
   const c=document.getElementById("mainContent");
@@ -2137,12 +2231,12 @@ function rWarehouse(){
   <div class="tab-pane ${wtab===0?"on":""}">
     <div class="stats-row">
       <div class="sbox"><div class="sbox-num" style="color:var(--gold)">${cnt.new}</div><div class="sbox-lbl">ממתין</div></div>
-      <div class="sbox"><div class="sbox-num" style="color:var(--blue)">${cnt.picking}</div><div class="sbox-lbl">בלקיטה</div></div>
-      <div class="sbox"><div class="sbox-num" style="color:var(--green)">${cnt.done}</div><div class="sbox-lbl">לקוט</div></div>
+      <div class="sbox"><div class="sbox-num" style="color:var(--blue)">${cnt.picking}</div><div class="sbox-lbl">בהכנה</div></div>
+      <div class="sbox"><div class="sbox-num" style="color:var(--green)">${cnt.done}</div><div class="sbox-lbl">מוכן</div></div>
       <div class="sbox"><div class="sbox-num" style="color:var(--orange)">${cnt.loaded}</div><div class="sbox-lbl">נשלח</div></div>
     </div>
     <div class="fbar">
-      ${[["all","הכל"],["new","🟡 ממתין"],["picking","🔵 בלקיטה"],["done","🟢 לקוט"]].map(([k,l])=>
+      ${[["all","הכל"],["new","🟡 ממתין"],["picking","🔵 בהכנה"],["done","🟢 מוכן"]].map(([k,l])=>
         `<button class="fchip ${wf===k?"on":""}" onclick="setWF('${k}')">${l}</button>`).join("")}
     </div>
     ${shown.length===0?`<div class="empty"><div class="empty-i">📦</div><div class="empty-t">אין הזמנות</div></div>`:shown.map(o=>oCard(o,"warehouse")).join("")}
@@ -2291,7 +2385,7 @@ function rDriver(){
       </div>
     </div>
     ${ready.length===0
-      ?`<div class="empty"><div class="empty-i">🚛</div><div class="empty-t">אין הזמנות מוכנות</div><div class="empty-s">ממתין לסיום לקיטה</div></div>`
+      ?`<div class="empty"><div class="empty-i">🚛</div><div class="empty-t">אין הזמנות מוכנות</div><div class="empty-s">ממתין לסיום הכנה</div></div>`
       :ready.map((o,i)=>`
       <div class="del-card" onclick="toggleDel('${o.id}')">
         <div class="del-num">${i+1}</div>
@@ -2302,7 +2396,7 @@ function rDriver(){
           <div id="dx_${o.id}" class="del-exp">
             ${o.notes?`<div class="nchip" style="margin-bottom:7px">💬 ${o.notes}</div>`:""}
             ${o.pickerNote?`<div class="nchip picker" style="margin-bottom:7px">📋 ${o.pickerNote}</div>`:""}
-            <div style="font-size:10px;color:var(--text3);margin-bottom:8px">לקוט ע"י: <strong style="color:var(--text2)">${o.pickerName}</strong></div>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:8px">הוכן ע"י: <strong style="color:var(--text2)">${o.pickerName}</strong></div>
             <button class="btn btn-green btn-sm" onclick="markLoaded('${o.id}',event)">✅ אישור העמסה</button>
           </div>
         </div>
@@ -2410,7 +2504,7 @@ function markLoaded(id,e){
   toast("✅ העמסה אושרה!"); renderRole(role);
 }
 
-function archiveOldOrders(){
+async function archiveOldOrders(){
   // Move loaded orders older than 30 days to archive, keep last 30 days
   const THIRTY_DAYS = 30 * 86400000;
   const orders = load();
@@ -2426,14 +2520,18 @@ function archiveOldOrders(){
     }
   });
   if(toArchive.length>0){
-    // Save archive by month
+    // Save archive by month — pull the latest cloud copy first so two devices
+    // archiving at the same time don't clobber each other's entries.
     const month = new Date().toISOString().slice(0,7);
     const archiveKey = "gada_archive_"+month;
-    const existing = JSON.parse(localStorage.getItem(archiveKey)||"[]");
-    localStorage.setItem(archiveKey, JSON.stringify([...existing, ...toArchive]));
+    const cloudArch = await fbGet("archive/"+month);
+    const existing = Array.isArray(cloudArch) ? cloudArch : JSON.parse(localStorage.getItem(archiveKey)||"[]");
+    const merged = dedupeById([...existing, ...toArchive]);
+    localStorage.setItem(archiveKey, JSON.stringify(merged));
     save(active);
-    // Also delete from Firebase
+    // Also delete from Firebase's live orders, and push the merged archive
     toArchive.forEach(o=>{ if(o._fbKey) fbDelete(o._fbKey); });
+    fbSaveArchiveMonth(month, merged);
     console.log(`✅ ארכוב: ${toArchive.length} הזמנות עברו לארכיון ${month}`);
   }
 }
@@ -2480,7 +2578,7 @@ function rManager(){
     <div class="stats-row">
       <div class="sbox"><div class="sbox-num">${cnt.total}</div><div class="sbox-lbl">סה"כ</div></div>
       <div class="sbox"><div class="sbox-num" style="color:var(--gold)">${cnt.new}</div><div class="sbox-lbl">ממתין</div></div>
-      <div class="sbox"><div class="sbox-num" style="color:var(--blue)">${cnt.picking}</div><div class="sbox-lbl">בלקיטה</div></div>
+      <div class="sbox"><div class="sbox-num" style="color:var(--blue)">${cnt.picking}</div><div class="sbox-lbl">בהכנה</div></div>
       <div class="sbox"><div class="sbox-num" style="color:var(--green)">${cnt.done+cnt.loaded}</div><div class="sbox-lbl">הושלם</div></div>
     </div>
     <div class="card">
@@ -2532,7 +2630,7 @@ function rManager(){
   <!-- 3: הזמנות -->
   <div class="tab-pane ${mtab===3?"on":""}">
     <div class="filter-bar">
-      ${[["all","הכל"],["new","🟡 ממתין"],["picking","🔵 בלקיטה"],["done","🟢 לקוט"],["loaded","🚛 נשלח"]].map(([k,l])=>
+      ${[["all","הכל"],["new","🟡 ממתין"],["picking","🔵 בהכנה"],["done","🟢 מוכן"],["loaded","🚛 נשלח"]].map(([k,l])=>
         `<button class="fchip ${mgrFilter===k?"on":""}" onclick="setMgrF('${k}')">${l}</button>`).join("")}
     </div>
     ${(()=>{
@@ -2573,6 +2671,15 @@ function rManager(){
       </div>
     </div>
     <div class="card" style="margin-top:10px">
+      <div class="card-title"><h3>🧑‍🔧 מכינים (מחסן)</h3></div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px">הרשימה שמוצגת בבחירת "מי מתחיל הכנה?" — משותפת לכל המכשירים</div>
+      <div id="pickerListEl"></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <input class="finp" id="newPickerInp" placeholder="הוסף מכין..." style="flex:1"/>
+        <button class="btn btn-gold btn-sm" onclick="addPickerName()">+ הוסף</button>
+      </div>
+    </div>
+    <div class="card" style="margin-top:10px">
       <div class="card-title"><h3>🗂️ ארכיון (30 יום)</h3></div>
       <div style="font-size:12px;color:var(--text2)">
         ${(()=>{
@@ -2597,19 +2704,28 @@ function rManager(){
   </div>`;
 }
 
-function setMT(n){ mtab=n; renderRole("manager"); if(n===6) rAgList(); }
+function setMT(n){
+  mtab=n; renderRole("manager");
+  if(n===6){
+    rAgList();
+    // Refresh agents/arrangers/archive from Firebase, then re-render with the shared data
+    Promise.all([syncSettingsFromCloud(), syncArchivesFromCloud()]).then(()=>{
+      if(mtab===6){ renderRole("manager"); rAgList(); }
+    }).catch(()=>{});
+  }
+}
 function setMgrF(f){ mgrFilter=f; renderRole("manager"); }
 function setDT(n){ dtab=n; renderRole("driver"); }
 
 function addAg(){
   const v=document.getElementById("newAgInp").value.trim(); if(!v)return;
   const saved=JSON.parse(localStorage.getItem("gada_agents")||"null")||AGENTS;
-  if(!saved.includes(v)){saved.push(v);localStorage.setItem("gada_agents",JSON.stringify(saved));}
+  if(!saved.includes(v)){saved.push(v);localStorage.setItem("gada_agents",JSON.stringify(saved));fbSaveAgents(saved);}
   document.getElementById("newAgInp").value=""; rAgList(); toast("סוכן נוסף ✓");
 }
 function rmAg(i){
   const saved=JSON.parse(localStorage.getItem("gada_agents")||"null")||AGENTS;
-  saved.splice(i,1); localStorage.setItem("gada_agents",JSON.stringify(saved)); rAgList();
+  saved.splice(i,1); localStorage.setItem("gada_agents",JSON.stringify(saved)); fbSaveAgents(saved); rAgList();
 }
 function confirmClear(){
   modal("מחיקת כל הנתונים","פעולה זו תמחק את כל ההזמנות. האם להמשיך?",[
@@ -2635,29 +2751,39 @@ function viewArchive(key){
   );
 }
 
-function markDelivered(id){
+async function markDelivered(id){
   const orders=load();
   const o=orders.find(x=>x.id===id);
   if(!o) return;
-  
+
   // Archive the order with 14-day retention
   o.deliveredAt=nowStr();
   o.deliveredMs=nowMs();
-  const archKey="gada_arch_"+new Date().toISOString().slice(0,7);
+  const month=new Date().toISOString().slice(0,7);
+  const archKey="gada_arch_"+month;
   const existing=JSON.parse(localStorage.getItem(archKey)||"[]");
   existing.push(o);
   localStorage.setItem(archKey, JSON.stringify(existing));
-  
+
   // Remove from active orders
   const updated=orders.filter(x=>x.id!==id);
   save(updated);
-  
+
   // Remove from Firebase
   if(o._fbKey) fbDelete(o._fbKey);
   else fbSave(updated);
-  
+
   toast(`📦 ${o.chain} ${o.city} — סופק ונארכב`);
   renderRole(role);
+
+  // Sync the delivered-archive to the cloud too, merging with whatever other
+  // devices already pushed so a near-simultaneous delivery elsewhere isn't lost.
+  // Runs after the UI already updated, so this doesn't delay the response.
+  const cloudDeliv=await fbGet("delivered/"+month);
+  const base=Array.isArray(cloudDeliv)?cloudDeliv:JSON.parse(localStorage.getItem(archKey)||"[]");
+  const merged=dedupeById([...base,o]);
+  localStorage.setItem(archKey, JSON.stringify(merged));
+  fbSaveDeliveredMonth(month, merged);
 }
 
 function cleanOldArchive(){
@@ -2725,6 +2851,7 @@ function oCard(o,r){
         <span class="spill ${spCls(o.status)}">${sLabel(o.status)}</span>
         <span class="oh-pal">${o.pallets>0?o.pallets+" 📦":"טרם נספר"}</span>
         ${o.needArranger?`<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:20px;background:rgba(139,92,246,0.15);color:var(--purple)">👤 סדרן${o.arrangerName?" – "+o.arrangerName:""}</span>`:""}
+        ${o.pickerName?`<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:20px;background:rgba(59,130,246,0.15);color:var(--blue)">🧑‍🔧 ${o.pickerName}</span>`:""}
         <span class="oh-agent">${o.agentName}</span>
       </div>
     </div>
@@ -2732,14 +2859,14 @@ function oCard(o,r){
       <div class="dg">
         <div><div class="dg-k">סוכן</div><div class="dg-v">${o.agentName}</div></div>
         <div><div class="dg-k">נשלח</div><div class="dg-v" style="font-size:11px">${o.createdAt}</div></div>
-        ${o.pickerName?`<div><div class="dg-k">מקלט</div><div class="dg-v">${o.pickerName}</div></div>`:""}
+        ${o.pickerName?`<div><div class="dg-k">מכין</div><div class="dg-v">${o.pickerName}</div></div>`:""}
         ${o.needArranger?`<div><div class="dg-k">סדרן</div><div class="dg-v" style="color:var(--purple)">${o.arrangerName||"ממתין לשיבוץ"}</div></div>`:""}
         ${o.arrangerDate?`<div><div class="dg-k">תאריך סדרן</div><div class="dg-v">${o.arrangerDate}</div></div>`:""}
-        ${o.pickedAt?`<div><div class="dg-k">לקיטה</div><div class="dg-v" style="font-size:11px">${o.pickedAt}</div></div>`:""}
+        ${o.pickedAt?`<div><div class="dg-k">הכנה</div><div class="dg-v" style="font-size:11px">${o.pickedAt}</div></div>`:""}
         ${o.loadedAt?`<div><div class="dg-k">נשלח</div><div class="dg-v" style="font-size:11px">${o.loadedAt}</div></div>`:""}
       </div>
       ${o.notes?`<div class="nchip">💬 <span class="nchip-lbl">סוכן:</span>${o.notes}</div>`:""}
-      ${o.pickerNote?`<div class="nchip picker">📋 <span class="nchip-lbl" style="color:var(--blue)">מקלט:</span>${o.pickerNote}</div>`:""}
+      ${o.pickerNote?`<div class="nchip picker">📋 <span class="nchip-lbl" style="color:var(--blue)">מכין:</span>${o.pickerNote}</div>`:""}
       ${acts?`<div class="ocard-acts">${acts}</div>`:""}
     </div>
   </div>`;
@@ -2751,7 +2878,7 @@ function toggleCard(id){
 function getActs(o,r){
   const a=[];
   if(r==="warehouse"||r==="manager"){
-    if(o.status==="new") a.push(`<button class="btn btn-blue btn-sm" onclick="startPick('${o.id}')">🔵 התחל לקיטה</button>`);
+    if(o.status==="new") a.push(`<button class="btn btn-blue btn-sm" onclick="startPick('${o.id}')">🔵 התחל הכנה</button>`);
     if(o.status==="picking") a.push(`<button class="btn btn-green btn-sm" onclick="finishPick('${o.id}')">✅ סמן בוצע</button>`);
     if(o.status==="loaded") a.push(`<button class="btn btn-green btn-sm" onclick="markDelivered('${o.id}')">📦 סופק ללקוח</button>`);
   }
@@ -2800,22 +2927,44 @@ function doReassign(id){
 // PICKING
 // ════════════════════════════════
 function startPick(id){
-  const saved=localStorage.getItem("gada_picker")||"";
-  modal("התחל לקיטה",
-    `<div class="fg"><label class="flbl">שם המקלט</label><input class="finp" id="pickerIn" value="${saved}" placeholder="שם..."/></div>`,
+  // Several מחסנאים share this login, so we always ask explicitly who's starting —
+  // no name is pre-filled, to avoid accidentally attributing work to whoever used
+  // this device last. Known names come from a shared, Firebase-synced list; a new
+  // name typed in gets added to that list for next time.
+  const pickers=getPickers();
+  const options=pickers.map(p=>`<option value="${p}">${p}</option>`).join("");
+  modal("מי מתחיל הכנה?",
+    `<div class="fg">
+      <label class="flbl">בחר שם</label>
+      <select class="finp" id="pickerSel" onchange="document.getElementById('pickerOtherWrap').style.display=(this.value==='__other__')?'block':'none'">
+        <option value="">בחר שם...</option>
+        ${options}
+        <option value="__other__">➕ שם אחר...</option>
+      </select>
+      <div id="pickerOtherWrap" style="display:${pickers.length?"none":"block"};margin-top:8px">
+        <input class="finp" id="pickerOtherIn" placeholder="הזן שם..."/>
+      </div>
+    </div>`,
     [{l:"ביטול",c:"btn-ghost",a:"closeModal()"},{l:"🔵 התחל",c:"btn-blue",a:`doStart('${id}')`}]
   );
+  if(!pickers.length){ setTimeout(()=>{ const s=document.getElementById("pickerSel"); if(s) s.value="__other__"; },0); }
 }
 function doStart(id){
-  const n=document.getElementById("pickerIn").value.trim();
-  if(!n){toast("הזן שם","err");return;}
-  localStorage.setItem("gada_picker",n);
+  const sel=document.getElementById("pickerSel");
+  let n=sel?.value||"";
+  if(n==="__other__"||!n){
+    n=document.getElementById("pickerOtherIn")?.value.trim()||"";
+  }
+  if(!n){toast("בחר או הזן שם","err");return;}
+  // Remember this name in the shared pickers list (synced to Firebase) for next time
+  const known=getPickers();
+  if(!known.includes(n)){ known.push(n); localStorage.setItem(PICKERS_KEY,JSON.stringify(known)); fbSavePickers(known); }
   const orders=load(); const o=orders.find(x=>x.id===id); if(!o)return;
   o.status="picking"; o.pickerName=n; save(orders);
   if(o._fbKey){ fbPatch(o._fbKey,{status:"picking",pickerName:n}); }
   else{ fbSave(orders); } // fallback: save all
   closeModal();
-  toast(`🔵 ${n} מתחיל לקיטה`);
+  toast(`🔵 ${n} מתחיל הכנה`);
   // Print label
   printLabel(o);
   renderRole(role);
@@ -2870,7 +3019,7 @@ function printLabel(o){
   w.document.close();
 }
 function finishPick(id){
-  modal("✅ סיום לקיטה",
+  modal("✅ סיום הכנה",
     `<div class="fg">
       <label class="flbl" style="font-size:14px;margin-bottom:8px">כמה משטחים נארזו?</label>
       <input class="finp" id="palIn" type="number" min="1" max="99" placeholder="הזן מספר..."
@@ -2882,7 +3031,7 @@ function finishPick(id){
       </div>
     </div>
     <div class="fg" style="margin-top:12px">
-      <label class="flbl">הערת מקלט (אופציונלי)</label>
+      <label class="flbl">הערת מכין (אופציונלי)</label>
       <textarea class="finp" id="noteIn" placeholder="חסר פריט, נזק, החלפה..." style="min-height:55px"></textarea>
     </div>`,
     [{l:"ביטול",c:"btn-ghost",a:"closeModal()"},{l:"✅ סמן בוצע",c:"btn-green",a:`doFinish('${id}')`}]
@@ -2901,7 +3050,7 @@ function doFinish(id){
   save(orders);
   if(o._fbKey){ fbPatch(o._fbKey,{status:"done",pallets:pal,pickedAt:o.pickedAt,pickerNote:note}); }
   else{ fbSave(orders); }
-  closeModal(); toast(`✅ לקוט! ${pal} משטחים`); renderRole(role);
+  closeModal(); toast(`✅ מוכן! ${pal} משטחים`); renderRole(role);
 }
 function delOrder(id){
   const orders=load();
@@ -2931,7 +3080,7 @@ function rSched(){
 function addArranger(){
   const v=document.getElementById("newArrInp")?.value.trim(); if(!v)return;
   const arrs=getArrangers();
-  if(!arrs.includes(v)){arrs.push(v);localStorage.setItem(ARRANGERS_KEY,JSON.stringify(arrs));}
+  if(!arrs.includes(v)){arrs.push(v);localStorage.setItem(ARRANGERS_KEY,JSON.stringify(arrs));fbSaveArrangers(arrs);}
   if(document.getElementById("newArrInp")) document.getElementById("newArrInp").value="";
   renderRole(role); toast("סדרן נוסף ✓");
 }
@@ -2939,6 +3088,7 @@ function rmArranger(i){
   const arrs=getArrangers();
   arrs.splice(i,1);
   localStorage.setItem(ARRANGERS_KEY,JSON.stringify(arrs));
+  fbSaveArrangers(arrs);
   renderRole(role);
 }
 function rAgList(){
@@ -2953,6 +3103,26 @@ function rAgList(){
   <div class="drow"><span style="font-weight:700">👤 ${a}</span>
   <button class="btn btn-red btn-sm" onclick="rmArranger(${i})">הסר</button></div>`).join("")
   ||`<div style="color:var(--text3);font-size:12px;padding:8px 0">אין סדרנים</div>`;
+  const pickEl=document.getElementById("pickerListEl"); if(!pickEl)return;
+  const pks=getPickers();
+  pickEl.innerHTML=pks.map((a,i)=>`
+  <div class="drow"><span style="font-weight:700">🧑‍🔧 ${a}</span>
+  <button class="btn btn-red btn-sm" onclick="rmPickerName(${i})">הסר</button></div>`).join("")
+  ||`<div style="color:var(--text3);font-size:12px;padding:8px 0">אין עדיין מכינים ברשימה — יתווספו אוטומטית כשמישהו יתחיל הכנה</div>`;
+}
+function addPickerName(){
+  const v=document.getElementById("newPickerInp")?.value.trim(); if(!v)return;
+  const pks=getPickers();
+  if(!pks.includes(v)){pks.push(v);localStorage.setItem(PICKERS_KEY,JSON.stringify(pks));fbSavePickers(pks);}
+  if(document.getElementById("newPickerInp")) document.getElementById("newPickerInp").value="";
+  rAgList(); toast("מכין נוסף ✓");
+}
+function rmPickerName(i){
+  const pks=getPickers();
+  pks.splice(i,1);
+  localStorage.setItem(PICKERS_KEY,JSON.stringify(pks));
+  fbSavePickers(pks);
+  rAgList();
 }
 
 // ════════ AI ROUTE OPTIMIZER ════════
@@ -2978,7 +3148,7 @@ function rAIOptimizer(orders){
   <div class="card" style="margin-bottom:12px">
     <div class="card-title"><h3>🤖 AI — איחוד קווי הפצה</h3></div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:10px;line-height:1.6">
-      ה-AI מנתח את כל ההזמנות הלקוטות ומציע איחוד קווים קרובים גיאוגרפית
+      ה-AI מנתח את כל ההזמנות המוכנות ומציע איחוד קווים קרובים גיאוגרפית
       כדי שהמשאית תצא עם <strong style="color:var(--gold)">10 משטחים</strong>.
     </div>
     <div style="background:var(--bg2);border-radius:10px;padding:12px;margin-bottom:12px;border:1px solid var(--border)">
@@ -3012,7 +3182,7 @@ function rAIOptimizer(orders){
 async function runAI(){
   const orders=load();
   const done=orders.filter(o=>o.status==="done");
-  if(done.length===0){ toast("אין הזמנות לקוטות","err"); return; }
+  if(done.length===0){ toast("אין הזמנות מוכנות","err"); return; }
   
   aiLoading=true; aiResult=""; renderRole("manager");
 
@@ -3140,7 +3310,7 @@ function toggleWSpecial(id){
 }
 function wDotCls(s){ return{new:"wo-dot-new",picking:"wo-dot-picking",done:"wo-dot-done",loaded:"wo-dot-loaded"}[s]||""; }
 function wRowCls(s){ return{new:"ws-new",picking:"ws-picking",done:"ws-done",loaded:"ws-loaded"}[s]||""; }
-function wStatusLbl(s){ return{new:"🔴 לא נגעו",picking:"🟡 בלקיטה",done:"✅ מוכן",loaded:"🚛 נשלח"}[s]||s; }
+function wStatusLbl(s){ return{new:"🔴 לא נגעו",picking:"🟡 בהכנה",done:"✅ מוכן",loaded:"🚛 נשלח"}[s]||s; }
 function wStatusCls(s){ return{new:"wts-new",picking:"wts-picking",done:"wts-done",loaded:"wts-loaded"}[s]||""; }
 
 function rWeeklyBoard(orders){
@@ -3189,7 +3359,7 @@ function rWeeklyBoard(orders){
   return `
   <div style="margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--text2)">
     <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:var(--red);display:inline-block"></span>לא נגעו</span>
-    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:var(--gold);display:inline-block"></span>בלקיטה</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:var(--gold);display:inline-block"></span>בהכנה</span>
     <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:var(--green);display:inline-block"></span>מוכן</span>
     <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:var(--orange);display:inline-block"></span>נשלח</span>
   </div>
