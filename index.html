@@ -1923,8 +1923,13 @@ function submitOrder(){
     needArranger,arrangerDate,arrangerNote,
     arrangerName:"",arrangerAssignedAt:""};
   arrangerNeeded=false;
-  // Push to Firebase
+  // Push to Firebase and store the key for later sync
   fbPush(newOrder).then(fbKey=>{
+    if(fbKey){
+      newOrder._fbKey=fbKey;
+      orders=load(); const idx=orders.findIndex(o=>o.id===newOrder.id);
+      if(idx>=0){ orders[idx]._fbKey=fbKey; save(orders); }
+    }
     toast(`✅ ${chain} ${city} – נשלח!`);
   });
   // Also update local immediately for UX
@@ -2346,7 +2351,7 @@ function rManager(){
   </div>
 
   <!-- הזמנות -->
-  <div class="tab-pane ${mtab===2?"on":""}">
+  <div class="tab-pane ${mtab===3?"on":""}">
     <div class="filter-bar">
       ${[["all","הכל"],["new","🟡 ממתין"],["picking","🔵 בלקיטה"],["done","🟢 לקוט"],["loaded","🟠 נשלח"]].map(([k,l])=>
         `<button class="fchip ${mgrFilter===k?"on":""}" onclick="setMgrF('${k}')">${l}</button>`).join("")}
@@ -2361,17 +2366,19 @@ function rManager(){
   </div>
 
   <!-- AI -->
-  <div class="tab-pane ${mtab===3?"on":""}">
+  <div class="tab-pane ${mtab===4?"on":""}">
     ${rAIOptimizer(orders)}
   </div>
 
   <!-- סדרנים -->
-  <div class="tab-pane ${mtab===4?"on":""}">
+  <div class="tab-pane ${mtab===5?"on":""}">
     ${rArrangerTab(orders)}
   </div>
 
   <!-- הגדרות -->
-  <div class="tab-pane ${mtab===5?"on":""}>\n    <div class=\"card\">\n      <div class=\"card-title\"><h3>⚙️ סוכנים</h3></div>
+  <div class="tab-pane ${mtab===6?"on":""}">
+    <div class="card">
+      <div class="card-title"><h3>⚙️ סוכנים</h3></div>
       <div id="agList"></div>
       <div style="display:flex;gap:8px;margin-top:11px">
         <input class="finp" id="newAgInp" placeholder="הוסף סוכן..." style="flex:1"/>
