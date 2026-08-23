@@ -1727,13 +1727,38 @@ function startRf(){
   // Try SSE for real-time updates
   try{
     sseSource=new EventSource("https://gada-2027-default-rtdb.europe-west1.firebasedatabase.app/orders.json");
-    sseSource.addEventListener("put",async (e)=>{
+        sseSource.addEventListener("put",async (e)=>{
       try{
         const data=JSON.parse(e.data);
         if(!data) return;
+        const path = data.path||"/";
         const raw = data.data;
-        if(!raw) return;
-        const orders=Object.entries(raw).map(([k,o])=>{if(o){o._fbKey=k;} return o;}).filter(Boolean);
+        let orders;
+        if(path==="/"){
+          // Full collection snapshot (initial connection, or bulk fbSave)
+          orders = raw ? Object.entries(raw).map(([k,o])=>{if(o){o._fbKey=k;} return o;}).filter(Boolean) : [];
+        } else {
+          // Update scoped to a single order: path is "/-fbKey" or "/-fbKey/field"
+          const segs = path.split("/").filter(Boolean);
+          const fbKey = segs[0];
+          orders = load();
+          const idx = orders.findIndex(o=>o._fbKey===fbKey);
+          if(segs.length===1){
+            if(raw===null){
+              // Order deleted
+              if(idx>-1) orders.splice(idx,1);
+            } else if(raw && typeof raw==="object"){
+              raw._fbKey=fbKey;
+              if(idx>-1) orders[idx]=raw; else orders.push(raw);
+            }
+          } else if(idx>-1){
+            // Deep field update (e.g. /-fbKey/status) - patch just that field
+            orders[idx][segs[1]] = raw;
+          } else {
+            // Unknown order not in local cache - refetch to be safe
+            orders = await fbLoad();
+          }
+        }
         localStorage.setItem(SK,JSON.stringify(orders));
         const h=hashArr(orders);
         refreshAlertBanner();
